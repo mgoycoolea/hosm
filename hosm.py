@@ -28,6 +28,7 @@ ydomain = 1600
 xpoints = 400
 ypoints = 400
 M = 5
+nl_damping = 2
 
 spec_threshold = 20
 spectrum_file = 0
@@ -36,14 +37,15 @@ dt = 0.08
 save_freq = 1
 nstep = 5
 
-
-nl_damping = 2
 save_on_disk = False
+
+np.random.seed(1) # comment if you want truly random
+
 
 total_time = nstep*dt
 number_saved_steps = nstep//save_freq
 
-#file name will contain this unique string
+# save file name will contain this unique string
 tag = ('_M'+str(M)+'_dim'+str(xdomain)+'_'+str(ydomain)+'_time'+str(total_time)+
        '_dt'+str(dt)+'_savedensity'+str(save_freq)+'_specthresh'+str(spec_threshold))
 
@@ -53,7 +55,10 @@ tag = ('_M'+str(M)+'_dim'+str(xdomain)+'_'+str(ydomain)+'_time'+str(total_time)+
 #ifft2 = pyfftw.builders.ifft2(test_array, threads=8)
 #fft2 = pyfftw.builders.fft2(test_array, threads=8)
 
+
+
 def integration_scheme(scheme):
+    '''Experimental, variable integration scheme feature.'''
     if scheme == 'euler':
         time_vector = np.array([0])
         weight_vector = np.array([[1]])
@@ -65,11 +70,13 @@ def integration_scheme(scheme):
 
     return time_vector, weight_vector
 
+
 def suggest_dt(xdomain, ydomain,
-                   xpoints, ypoints):
+               xpoints, ypoints):
     '''
-    Give a naive maximum delta t based on the maximum speed
-    of energy propagation in the wave.
+    Give a  maximum delta t based on the maximum speed
+    of energy propagation in the wave using the CFL condition
+    with Courant_num = 1. 
     '''
     min_kx = 2*pi/xdomain
     min_ky = 2*pi/ydomain
@@ -90,7 +97,7 @@ def create_2d_grids(xdomain, ydomain,
     delx = x[1]-x[0]
     dely = y[1]-y[0]
     xgrid, ygrid = np.meshgrid(x,y)
-
+    
     kx = fftfreq(xpoints, xdomain/xpoints)*(2*pi)
     ky = fftfreq(ypoints, ydomain/ypoints)*(2*pi)
     dkx_dky = (2*pi)/xdomain * (2*pi)/ydomain
@@ -106,8 +113,9 @@ def make_spectrum(spectrum_file, kxgrid, kygrid, ktgrid, spec_threshold):
         spectrum = jonswap_kspectrum(kxgrid, kygrid, ktgrid)
     else:
         None #make load file here np.genfromtxt(
-    filtered_spectrum = spectrum * (spectrum > spec_threshold)
-    return filtered_spectrum
+
+        spectrum *= (spectrum > spec_threshold) #filtering
+    return spectrum
 
 def jonswap_kspectrum(kxgrid, kygrid, ktgrid, wcut=10*pi,
                       tp=2*pi, gamma=3.3, alpha=0.016395, sprd=1):
@@ -146,7 +154,7 @@ def jonswap_kspectrum(kxgrid, kygrid, ktgrid, wcut=10*pi,
     gtheta = gnorm * np.cos(thr)**(2*sprd)
     gtheta *= np.cos(thr) > 0.000001
 
-    corrk=(grav**2 / (2*wk**3))
+    corrk= grav**2/(2*wk**3)
 
     spectrum_k =  spcj * gtheta * corrk
     spectrum_k[0,0] = 0
@@ -155,10 +163,9 @@ def jonswap_kspectrum(kxgrid, kygrid, ktgrid, wcut=10*pi,
 
 
 def make_initial_surface(spectrum, ktgrid, dkx_dky):
-    '''takes the given spectrum and makes an initial surface and
-    potential by giving each mode a random phase'''
+    '''Make an initial surface and potential from a spectrum
+    by giving each mode a random phase'''
 
-    np.random.seed(1)
     random_phase = (2*pi)*np.random.random(np.shape(spectrum))
     amplitude_k = np.sqrt(2*spectrum*dkx_dky)
     wk = np.sqrt(ktgrid*grav)
@@ -215,29 +222,21 @@ def maximum_height(zeta, old_max, time):
         out['time'] = time
         return output
 
-def rogue_wave_detector(old_zeta, new_zeta, freak_number, h_sig, time):
-    check = 0
-    wmax = 0
-    wmin = 0
-    freak_wave_height = 0
-    y,x = np.shape(new_zeta)
 
-    for i in range(x):
-        for j in range(y):
+def detect_rogue_waves(old_zeta, new_zeta, wmax, wmin, hsig, storage, step):
 
-            if (old_zeta[i,j]<0) & (new_zeta[i,j]>0):
-                if (wmax-wmin)>(freak_number*h_sig):
-                    freak_wave_height = wmax-wmin
-                    wmax=new_zeta[i,j]
-                    wmin=new_zeta[i,j]
-
-                else:
-                    if new_zeta[i,j]>wmax:
-                        wmax=new_zeta[i,j]
-                    if new_zeta[i,j]<wmin:
-                        wmin=new_zeta[i,j]
-    return
-
+    tracker = np.where((old_zeta < 0) * (new_zeta > 0), 0, 1)
+    difference = np.where(tracker == 0, wmax - wmin > 2*hsig, 0)
+    indices = difference.nonzero()
+     
+    if np.size(indices) > 0:
+        print('You found rogue wave(s) at timestep ' + str(step) + ' and coordinates ' + str(indices[0]))
+        storage['step'] = indices
+    wmax = np.where(new_zeta > wmax, new_zeta, wmax)
+    wmin = np.where(new_zeta < wmin, new_zeta, wmin)
+    wmax *= tracker
+    wmin *= tracker
+    return indices, wmax, wmin
 
 
 
