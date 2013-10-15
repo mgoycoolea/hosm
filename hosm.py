@@ -35,7 +35,7 @@ spectrum_file = 0
 
 dt = 0.08
 save_freq = 1
-nstep = 5
+nstep = 50
 
 save_on_disk = False
 
@@ -223,20 +223,20 @@ def maximum_height(zeta, old_max, time):
         return output
 
 
-def detect_rogue_waves(old_zeta, new_zeta, wmax, wmin, hsig, storage, step):
+def detect_rogue_waves(old_zeta, new_zeta, wmax, wmin, sig_h, storage, step):
 
     tracker = np.where((old_zeta < 0) * (new_zeta > 0), 0, 1)
-    difference = np.where(tracker == 0, wmax - wmin > 2*hsig, 0)
+    difference = np.where(tracker == 0, wmax - wmin > 2*sig_h, 0)
     indices = difference.nonzero()
      
     if np.size(indices) > 0:
-        print('You found rogue wave(s) at timestep ' + str(step) + ' and coordinates ' + str(indices[0]))
-        storage['step'] = indices
+        print('You found rogue wave(s) at time ' + str(step) + ' and coordinates ' + str(indices))
+        storage[str(step)] = indices
     wmax = np.where(new_zeta > wmax, new_zeta, wmax)
     wmin = np.where(new_zeta < wmin, new_zeta, wmin)
     wmax *= tracker
     wmin *= tracker
-    return indices, wmax, wmin
+    return storage, wmax, wmin
 
 
 
@@ -252,7 +252,6 @@ def monitor_conserved_quantities(phi, zeta, dzeta_dt, kxgrid, kygrid):
 
     output = dict(mass=mass, mom_x=mom_x, mom_y=mom_y, kin=kin, poten=poten)
     return output
-
 
 
 def derive_euler_equation_functions(M):
@@ -308,16 +307,15 @@ def derive_euler_equation_functions(M):
 
     return functions[0], functions[1], final_eqs[0], final_eqs[1]
 
-def dealias(array, M):
+def dealias(array_k, M):
     '''
     Filter high-frequencies of a given 2D-array that
-    represents a variable in space as seen in West 1987.
+    represents a variable in k-space as seen in West 1987.
 
     ndim: number of entries in one dimension
     M: order of non-linearity).
     '''
 
-    array_k = fft2(array)
     ydim, xdim = np.shape(array_k)
 
     min_kx = int(xdim/(M+1))
@@ -329,13 +327,12 @@ def dealias(array, M):
     array_k[min_ky:max_ky,:] = 0
     array_k[:,min_kx:max_kx] = 0
 
-    array_out = np.real(ifft2(array_k))
-
-    return array_out
+    return array_k
 
 
 def integration_and_analysis(zeta0, phi0, f_zeta_t, f_phi_t, M,
-                             kxgrid, kygrid, ktgrid, dt, time, damping):
+                             kxgrid, kygrid, ktgrid, dt, time, damping,
+                             storage, wmax, wmin):
     '''
     Perform the 4th order Runge-Kutta integration scheme for
     surface and potential.
@@ -380,10 +377,12 @@ def integration_and_analysis(zeta0, phi0, f_zeta_t, f_phi_t, M,
     kernel = monitor_conserved_quantities(phi0, zeta0, dzeta_dt, kxgrid, kygrid)
     print('Total Energy: ' + str(kernel['kin'] + kernel['poten']) + ' Total Mass:' +  str(kernel['mass']))
 
-    zeta_next = dealias(zeta0 + dt*dzeta_dt, M)
-    phi_next = dealias(phi0 + dt*dphi_dt, M)
+    zeta_next = np.real(ifft2(dealias(fft2(zeta0 + dt*dzeta_dt), M))) #We transform, dealias, then transform back as real. 
+    phi_next = np.real(ifft2(dealias(fft2(phi0 + dt*dphi_dt), M)))
 
-    return zeta_next, phi_next, phi_m
+    storage, wmax, wmin = detect_rogue_waves(zeta0, zeta_next, wmax, wmin, sig_h, storage, time)
+
+    return zeta_next, phi_next, phi_m, storage, wmax, wmin
 
 def tderiv_surface_potential(zeta, phi, f_dzeta_dt, f_dphi_dt, M,
                             kxgrid, kygrid, ktgrid, time, damping,
@@ -479,6 +478,8 @@ xgrid, ygrid, kxgrid, kygrid, ktgrid, dkx_dky = create_2d_grids(xdomain, ydomain
                                                                 xpoints, ypoints)
 
 spectrum = make_spectrum(spectrum_file, kxgrid, kygrid, ktgrid, spec_threshold)
+spectrum = dealias(spectrum, M)
+
 
 initial_spectrum_stats = spectrum_statistics(spectrum, ktgrid, dkx_dky)
 
@@ -488,6 +489,10 @@ zeta_output = np.empty((number_saved_steps, ypoints, xpoints))
 phi_output = np.empty((number_saved_steps, ypoints, xpoints))
 phi_m_output = np.empty((number_saved_steps, M, ypoints, xpoints))
 
+rogue_waves = {}
+wmax = np.zeros_like(surface)
+wmin= np.zeros_like(surface)
+sig_h = initial_spectrum_stats['sig_h']
 
 for n in range(nstep):
     time = dt*n  
@@ -496,8 +501,10 @@ for n in range(nstep):
         zeta_output[n//save_freq,:,:] = surface
         phi_output[n//save_freq,:,:] = potential
         
-    surface, potential, phi_m = integration_and_analysis(surface, potential, f_dzeta_dt, f_dphi_dt, M,
-                                                  kxgrid, kygrid, ktgrid, dt, time, nl_damping)
+    (surface, potential, phi_m,
+     rogue_waves, wmax, wmin) = integration_and_analysis(surface, potential, f_dzeta_dt, f_dphi_dt, M,
+                                                         kxgrid, kygrid, ktgrid, dt, time, nl_damping, 
+                                                         rogue_waves, wmax, wmin)
 
 
 if save_on_disk:
